@@ -1,0 +1,75 @@
+# docker-compose.yml — orquestração unificada do workspace do catálogo de filmes.
+#
+# Os 4 repositórios do workspace (movie-sample-ai, movie-sample-gateway,
+# movie-sample-server, movie-sample-front) estão todos implementados, cada um com
+# seu próprio Dockerfile. Os `build.context` abaixo apontam para esses repositórios
+# como pastas irmãs deste (movie-sample-ai).
+#
+# Este arquivo é versionado em movie-sample-ai porque é o repositório orquestrador
+# do workspace — não vive na raiz do workspace (não versionada) nem em nenhum
+# repositório de aplicação individualmente.
+
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: movie_catalog
+      MYSQL_USER: movie_catalog
+      MYSQL_PASSWORD: movie_catalog
+      MYSQL_ROOT_PASSWORD: movie_catalog
+    ports:
+      - "3306:3306"
+    volumes:
+      - movie_catalog_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pmovie_catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # server: movie-sample-server — Spring MVC + JPA, migra o schema via Liquibase na
+  # inicialização. Expõe a API consumida pelo gateway.
+  server:
+    build:
+      context: ../movie-sample-server
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/movie_catalog
+      SPRING_DATASOURCE_USERNAME: movie_catalog
+      SPRING_DATASOURCE_PASSWORD: movie_catalog
+    ports:
+      - "8081:8081"
+
+  # gateway: movie-sample-gateway — fachada única (Spring Cloud Gateway, WebFlux).
+  # Roteia /api/** para o server e as demais rotas para o front.
+  gateway:
+    build:
+      context: ../movie-sample-gateway
+    depends_on:
+      - server
+      - front
+    environment:
+      SERVER_URI: http://server:8081
+      FRONT_URI: http://front:3000
+    ports:
+      - "8080:8080"
+
+  # front: movie-sample-front — Next.js. Sempre acessado através do gateway.
+  front:
+    build:
+      context: ../movie-sample-front
+      args:
+        # Origem pública pela qual o navegador acessa o catálogo (via gateway) —
+        # precisa ser build arg, não env var: allowedOrigins (next.config.ts) é
+        # lido em build time. Ver GATEWAY_PUBLIC_ORIGIN no .env.example do front.
+        GATEWAY_PUBLIC_ORIGIN: localhost:8080
+    environment:
+      GATEWAY_URL: http://gateway:8080
+    ports:
+      - "3000:3000"
+
+volumes:
+  movie_catalog_mysql_data:
